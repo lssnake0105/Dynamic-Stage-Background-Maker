@@ -1,4 +1,5 @@
 import { clamp, mixColor, rgba, tuneColor } from "./color.js";
+import { drawEffectScene } from "./effects.js";
 
 export function createRenderer({ previewCanvas, exportCanvas, getDevicePixelRatio }) {
   const previewCtx = previewCanvas.getContext("2d", { alpha: false });
@@ -131,11 +132,15 @@ function drawScene(ctx, width, height, scene, motionState, controls) {
 
   ctx.save();
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = createBaseGradient(ctx, width, height, maxSide, palette, controls.brightness);
-  ctx.fillRect(0, 0, width, height);
-  drawMeshLayer(ctx, width, height, scene, motionState, controls);
-  drawAtmosphere(ctx, width, height, minSide, maxSide, palette, controls);
-  drawVignette(ctx, width, height, minSide, maxSide, controls.vignette);
+  if (controls.effectMode && controls.effectMode !== "mesh") {
+    drawEffectScene(ctx, width, height, scene, motionState, controls);
+  } else {
+    ctx.fillStyle = createBaseGradient(ctx, width, height, maxSide, palette, controls.brightness);
+    ctx.fillRect(0, 0, width, height);
+    drawMeshLayer(ctx, width, height, scene, motionState, controls);
+    drawAtmosphere(ctx, width, height, minSide, maxSide, palette, controls);
+    drawVignette(ctx, width, height, minSide, maxSide, controls.vignette);
+  }
   ctx.restore();
 }
 

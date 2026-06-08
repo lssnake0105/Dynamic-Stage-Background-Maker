@@ -1,6 +1,8 @@
 import {
   DEFAULT_EXPORT_SIZE,
+  DEFAULT_PALETTE_ROLES,
   EXPORT_DURATIONS,
+  EFFECT_MODES,
   EXPORT_SIZES,
   PRESETS,
   ROLE_KEYS
@@ -20,10 +22,15 @@ export function createApp(root) {
   const hero = root.querySelector("#hero");
   const heroUploadButton = root.querySelector("#heroUploadButton");
   const heroOpenPanelButton = root.querySelector("#heroOpenPanelButton");
+  const coverDrop = root.querySelector("#coverDrop");
+  const coverPreview = root.querySelector("#coverPreview");
+  const dropLabel = root.querySelector("#dropLabel");
   const toolbarUploadButton = root.querySelector("#toolbarUploadButton");
   const toolbarFullscreenButton = root.querySelector("#toolbarFullscreenButton");
   const toolbarExportButton = root.querySelector("#toolbarExportButton");
   const toolbarPanelButton = root.querySelector("#toolbarPanelButton");
+  const hidePanelButton = root.querySelector("#hidePanelButton");
+  const revealPanelButton = root.querySelector("#revealPanelButton");
   const panel = root.querySelector("#controlPanel");
   const presetGrid = root.querySelector("#presetGrid");
   const paletteGrid = root.querySelector("#paletteGrid");
@@ -40,7 +47,10 @@ export function createApp(root) {
   const configPreview = root.querySelector("#configPreview");
 
   const controls = {
+    effectMode: root.querySelector("#effectSelect"),
     preset: root.querySelector("#presetSelect"),
+    speed: root.querySelector("#speedRange"),
+    blur: root.querySelector("#blurRange"),
     brightness: root.querySelector("#brightnessRange"),
     motionStrength: root.querySelector("#motionRange"),
     grain: root.querySelector("#grainRange"),
@@ -53,7 +63,8 @@ export function createApp(root) {
     vignette: root.querySelector("#vignetteRange"),
     resolution: root.querySelector("#resolutionSelect"),
     duration: root.querySelector("#durationSelect"),
-    motionMode: root.querySelector("#motionModeSelect")
+    motionMode: root.querySelector("#motionModeSelect"),
+    fit: root.querySelector("#fitSelect")
   };
 
   const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -63,13 +74,18 @@ export function createApp(root) {
     dpr: Math.min(window.devicePixelRatio || 1, 2),
     source: { type: "image", fileName: "" },
     artworkUrl: "",
-    palette: null,
+    palette: DEFAULT_PALETTE_ROLES,
     scene: null,
     transition: createTransitionState(null, null, performance.now(), 0),
-    isPanelOpen: urlParams.get("panel") === "1",
+    isPanelOpen: urlParams.get("panel") !== "0",
+    isClean: false,
+    fit: "fill",
     exportSize: getExportSize(DEFAULT_EXPORT_SIZE),
     settings: {
       presetId: "soft",
+      effectMode: urlParams.get("effect") || PRESETS.soft.settings.effectMode,
+      speed: PRESETS.soft.settings.speed,
+      blur: PRESETS.soft.settings.blur,
       brightness: PRESETS.soft.settings.brightness,
       motionStrength: PRESETS.soft.settings.motionStrength,
       grain: PRESETS.soft.settings.grain,
@@ -86,6 +102,9 @@ export function createApp(root) {
     reducedMotion: prefersReducedMotion.matches
   };
 
+  state.scene = createMeshScene(state.palette, state.settings.presetId, state.settings);
+  state.transition = createTransitionState(null, state.scene, performance.now(), 0);
+
   const renderer = createRenderer({
     previewCanvas,
     exportCanvas,
@@ -93,6 +112,7 @@ export function createApp(root) {
   });
 
   populatePresetGrid(presetGrid, state.settings.presetId);
+  populateEffectOptions(controls.effectMode, state.settings.effectMode);
   populatePresetSelect(controls.preset, state.settings.presetId);
   populateResolutionOptions(controls.resolution, state.exportSize.value);
   populateDurationOptions(controls.duration, state.settings.durationSeconds);
@@ -112,6 +132,15 @@ export function createApp(root) {
     state.isPanelOpen = !state.isPanelOpen;
     syncUi();
   });
+  hidePanelButton.addEventListener("click", () => {
+    state.isClean = true;
+    syncUi();
+  });
+  revealPanelButton.addEventListener("click", () => {
+    state.isClean = false;
+    state.isPanelOpen = true;
+    syncUi();
+  });
   resetButton.addEventListener("click", resetExperience);
   exportConfigButton.addEventListener("click", handleExportConfig);
   importButton.addEventListener("click", () => configInput.click());
@@ -124,6 +153,7 @@ export function createApp(root) {
   });
 
   panel.addEventListener("input", handleControlInput);
+  panel.addEventListener("click", handlePanelClick);
   presetGrid.addEventListener("click", (event) => {
     const target = event.target.closest("[data-preset-id]");
     if (!target) {
@@ -144,10 +174,29 @@ export function createApp(root) {
     hero.dataset.dragging = "false";
     await handleArtworkFile(event.dataTransfer.files[0]);
   });
+  ["dragenter", "dragover"].forEach((name) => {
+    coverDrop.addEventListener(name, (event) => {
+      event.preventDefault();
+      coverDrop.classList.add("is-dragging");
+    });
+  });
+  ["dragleave", "drop"].forEach((name) => {
+    coverDrop.addEventListener(name, (event) => {
+      event.preventDefault();
+      coverDrop.classList.remove("is-dragging");
+    });
+  });
+  coverDrop.addEventListener("drop", async (event) => {
+    await handleArtworkFile(event.dataTransfer.files[0]);
+  });
 
   document.addEventListener("keydown", (event) => {
     if (event.key.toLowerCase() === "p") {
       state.isPanelOpen = !state.isPanelOpen;
+      syncUi();
+    }
+    if (event.key.toLowerCase() === "h") {
+      state.isClean = !state.isClean;
       syncUi();
     }
   });
@@ -193,6 +242,19 @@ export function createApp(root) {
       return;
     }
 
+    if (target === controls.effectMode) {
+      state.settings.effectMode = target.value;
+      rebuildScene(false);
+      syncUi();
+      return;
+    }
+
+    if (target === controls.fit) {
+      state.fit = target.value;
+      syncUi();
+      return;
+    }
+
     if (target === controls.resolution) {
       state.exportSize = getExportSize(target.value);
       syncUi();
@@ -212,6 +274,8 @@ export function createApp(root) {
     }
 
     const map = {
+      speedRange: "speed",
+      blurRange: "blur",
       brightnessRange: "brightness",
       motionRange: "motionStrength",
       grainRange: "grain",
@@ -234,6 +298,16 @@ export function createApp(root) {
     syncUi();
   }
 
+  function handlePanelClick(event) {
+    const target = event.target.closest("[data-fit]");
+    if (!target) {
+      return;
+    }
+    state.fit = target.dataset.fit;
+    controls.fit.value = state.fit;
+    syncUi();
+  }
+
   async function handleArtworkFile(file) {
     if (!file || !file.type?.startsWith("image/")) {
       return;
@@ -247,6 +321,9 @@ export function createApp(root) {
       state.source = { type: "image", fileName: file.name };
       state.palette = extractPaletteRoles(image);
       artworkImage.src = imageUrl;
+      coverPreview.src = imageUrl;
+      coverDrop.classList.add("has-image");
+      dropLabel.textContent = "Change Artwork";
       artworkBadge.textContent = file.name;
       rebuildScene(true);
       syncUi();
@@ -276,7 +353,11 @@ export function createApp(root) {
       state.settings.durationSeconds = payload.export.durationSeconds || state.settings.durationSeconds;
       state.transition = createTransitionState(null, state.scene, performance.now(), 0);
       state.isPanelOpen = true;
+      state.isClean = false;
       artworkImage.removeAttribute("src");
+      coverPreview.removeAttribute("src");
+      coverDrop.classList.remove("has-image");
+      dropLabel.textContent = "Choose Artwork";
       artworkBadge.textContent = `Config: ${file.name}`;
       syncControlValues();
       populatePresetGrid(presetGrid, state.settings.presetId);
@@ -310,7 +391,8 @@ export function createApp(root) {
       presetId: preset.id,
       ...preset.settings,
       durationSeconds: state.settings.durationSeconds,
-      motionMode: state.settings.motionMode
+      motionMode: state.settings.motionMode,
+      fit: state.fit
     };
     syncControlValues();
     populatePresetGrid(presetGrid, preset.id);
@@ -373,9 +455,7 @@ export function createApp(root) {
   function resetExperience() {
     revokeArtworkUrl();
     state.source = { type: "image", fileName: "" };
-    state.palette = null;
-    state.scene = null;
-    state.transition = createTransitionState(null, null, performance.now(), 0);
+    state.palette = DEFAULT_PALETTE_ROLES;
     state.exportSize = getExportSize(DEFAULT_EXPORT_SIZE);
     state.settings = {
       ...state.settings,
@@ -384,9 +464,16 @@ export function createApp(root) {
       durationSeconds: 10,
       motionMode: urlParams.get("motion") === "off" ? "static" : "auto"
     };
+    state.scene = createMeshScene(state.palette, state.settings.presetId, state.settings);
+    state.transition = createTransitionState(null, state.scene, performance.now(), 0);
+    state.isClean = false;
+    state.fit = "fill";
     coverInput.value = "";
     configInput.value = "";
     artworkImage.removeAttribute("src");
+    coverPreview.removeAttribute("src");
+    coverDrop.classList.remove("has-image");
+    dropLabel.textContent = "Choose Artwork";
     artworkBadge.textContent = "No artwork loaded";
     configPreview.value = "";
     syncControlValues();
@@ -397,8 +484,15 @@ export function createApp(root) {
   function syncUi() {
     appShell.dataset.hasScene = state.scene ? "true" : "false";
     appShell.dataset.recording = renderer.isRecording() ? "true" : "false";
-    panel.hidden = !state.isPanelOpen;
+    appShell.dataset.clean = state.isClean ? "true" : "false";
+    appShell.dataset.fit = state.fit;
+    panel.hidden = !state.isPanelOpen || state.isClean;
+    revealPanelButton.hidden = !state.isClean;
     toolbarPanelButton.classList.toggle("is-active", state.isPanelOpen);
+    toolbarPanelButton.textContent = state.isPanelOpen ? "Hide Panel" : "Panel";
+    root.querySelectorAll("[data-fit]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.fit === state.fit);
+    });
     outputInfo.textContent = `Export size: ${state.exportSize.width} x ${state.exportSize.height}`;
     renderPalette();
     renderConfigPreview();
@@ -408,8 +502,8 @@ export function createApp(root) {
   function syncStatus() {
     const motionLabel = isMotionEnabled() ? "motion active" : "static fallback";
     statusText.textContent = state.scene
-      ? `${state.source.fileName || state.scene.presetId} - ${motionLabel}`
-      : "Upload artwork to generate a dynamic stage background.";
+      ? `${state.source.fileName || state.scene.presetId} - ${getEffectName()} - ${motionLabel}`
+      : `Ready - ${getEffectName()}`;
     motionBadge.textContent = getMotionLabel();
   }
 
@@ -442,7 +536,10 @@ export function createApp(root) {
   }
 
   function syncControlValues() {
+    controls.effectMode.value = state.settings.effectMode;
     controls.preset.value = state.settings.presetId;
+    controls.speed.value = state.settings.speed;
+    controls.blur.value = state.settings.blur;
     controls.brightness.value = state.settings.brightness;
     controls.motionStrength.value = state.settings.motionStrength;
     controls.grain.value = state.settings.grain;
@@ -456,6 +553,7 @@ export function createApp(root) {
     controls.resolution.value = state.exportSize.value;
     controls.duration.value = String(state.settings.durationSeconds);
     controls.motionMode.value = state.settings.motionMode;
+    controls.fit.value = state.fit;
   }
 
   function isMotionEnabled() {
@@ -476,6 +574,10 @@ export function createApp(root) {
       return "Forced dynamic";
     }
     return state.reducedMotion ? "Reduce Motion detected" : "Motion active";
+  }
+
+  function getEffectName() {
+    return EFFECT_MODES.find((mode) => mode.id === state.settings.effectMode)?.name || "Aura";
   }
 
   function revokeArtworkUrl() {
@@ -548,16 +650,24 @@ function createTemplate() {
         </div>
       </aside>
 
-      <aside class="panel" id="controlPanel" hidden>
+      <aside class="panel" id="controlPanel">
         <div class="panel-header">
           <div>
-            <p class="eyebrow">Stage Background Maker</p>
-            <h2>Presets, motion controls, export</h2>
+            <h2>Dynamic Stage Background Maker</h2>
+            <p class="panel-note">Palette-driven VJ background generator</p>
           </div>
           <div class="panel-actions">
+            <button class="icon-button" type="button" id="hidePanelButton" title="Hide panel" aria-label="Hide panel">x</button>
             <button class="button-ghost" type="button" id="resetButton">Reset</button>
           </div>
         </div>
+
+        <section class="cover-zone">
+          <label class="cover-drop" for="coverInput" id="coverDrop">
+            <img id="coverPreview" alt="" />
+            <span id="dropLabel">Choose Artwork</span>
+          </label>
+        </section>
 
         <section class="control-stack">
           <div>
@@ -568,14 +678,34 @@ function createTemplate() {
             Preset
             <select id="presetSelect"></select>
           </label>
+          <label>
+            Effect
+            <select id="effectSelect"></select>
+          </label>
+          <select class="hidden-select" id="fitSelect" aria-label="Canvas fit">
+            <option value="fill">Fill</option>
+            <option value="sixteenNine">16:9</option>
+          </select>
+          <div class="segmented" role="group" aria-label="Canvas fit">
+            <button class="segment is-active" type="button" data-fit="fill">Fill</button>
+            <button class="segment" type="button" data-fit="sixteenNine">16:9</button>
+          </div>
         </section>
 
         <section class="control-stack">
           <p class="section-hint">Basic controls</p>
           <div class="advanced-grid">
             <label>
+              Speed
+              <input id="speedRange" type="range" min="0.25" max="2.5" step="0.05" />
+            </label>
+            <label>
+              Blur
+              <input id="blurRange" type="range" min="0" max="1" step="0.01" />
+            </label>
+            <label>
               Brightness
-              <input id="brightnessRange" type="range" min="0.72" max="1.18" step="0.01" />
+              <input id="brightnessRange" type="range" min="0.55" max="1.35" step="0.01" />
             </label>
             <label>
               Motion
@@ -660,6 +790,8 @@ function createTemplate() {
         </section>
       </aside>
 
+      <button class="reveal-button" id="revealPanelButton" type="button" hidden>Controls</button>
+
       <input class="hidden-input" id="coverInput" type="file" accept="image/*" />
       <input class="hidden-input" id="configInput" type="file" accept="application/json,.json" />
     </main>
@@ -680,6 +812,12 @@ function populatePresetGrid(container, activeId) {
 function populatePresetSelect(select, activeId) {
   select.innerHTML = Object.values(PRESETS)
     .map((preset) => `<option value="${preset.id}" ${preset.id === activeId ? "selected" : ""}>${preset.name}</option>`)
+    .join("");
+}
+
+function populateEffectOptions(select, activeId) {
+  select.innerHTML = EFFECT_MODES
+    .map((mode) => `<option value="${mode.id}" ${mode.id === activeId ? "selected" : ""}>${mode.name}</option>`)
     .join("");
 }
 
